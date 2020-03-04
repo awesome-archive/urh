@@ -1,0 +1,6 @@
+numpy>=1.9; sys_platform != 'win32'
+numpy>=1.9,!=1.16.0; sys_platform == 'win32'
+pyqt5
+psutil
+pyzmq
+cython

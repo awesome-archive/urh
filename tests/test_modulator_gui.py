@@ -1,26 +1,30 @@
-import unittest
-
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QDropEvent
 from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication
 
-import tests.utils_testing
-from tests.utils_testing import get_path_for_data_file
-from urh.controller.MainController import MainController
-
-app = tests.utils_testing.app
+from tests.QtTestCase import QtTestCase
+from urh.controller.dialogs.ModulatorDialog import ModulatorDialog
+from urh.util.Logger import logger
 
 
-class TestModulatorGUI(unittest.TestCase):
+class TestModulatorGUI(QtTestCase):
+
     def setUp(self):
-        self.form = MainController()
-        self.form.add_signalfile(get_path_for_data_file("esaver.complex"))
-        self.signal = self.form.signal_tab_controller.signal_frames[0].signal
-        self.gframe = self.form.generator_tab_controller
+        super().setUp()
         self.form.ui.tabWidget.setCurrentIndex(2)
 
-        self.dialog, _ = self.gframe.prepare_modulation_dialog()
-        self.gframe.initialize_modulation_dialog("1111", self.dialog)
+        logger.debug("Preparing Modulation dialog")
+        self.dialog, _ = self.form.generator_tab_controller.prepare_modulation_dialog()
+        QApplication.instance().processEvents()
+        QTest.qWait(self.WAIT_TIMEOUT_BEFORE_NEW)
+
+        if self.SHOW:
+            self.dialog.show()
+
+        logger.debug("Initializing Modulation dialog")
+        self.dialog.initialize("1111")
+        logger.debug("Preparation success")
 
     def test_add_remove_modulator(self):
         self.assertEqual(len(self.dialog.modulators), 1)
@@ -28,7 +32,7 @@ class TestModulatorGUI(unittest.TestCase):
         self.assertEqual(len(self.dialog.modulators), 2)
         self.dialog.ui.btnAddModulation.click()
         self.assertEqual(len(self.dialog.modulators), 3)
-        app.processEvents()
+        self.app.processEvents()
         self.dialog.ui.btnRemoveModulation.click()
         self.assertEqual(len(self.dialog.modulators), 2)
         self.dialog.ui.btnRemoveModulation.click()
@@ -50,13 +54,15 @@ class TestModulatorGUI(unittest.TestCase):
         self.dialog.ui.linEdDataBits.editingFinished.emit()
         self.assertEqual(self.dialog.current_modulator.display_bits, "10101010")
 
-        self.dialog.ui.btnRestoreBits.click()
+        assert isinstance(self.dialog, ModulatorDialog)
+
+        self.dialog.restore_bits_action.trigger()
         self.dialog.ui.linEdDataBits.editingFinished.emit()
         self.assertEqual(self.dialog.current_modulator.display_bits, bits)
 
-        self.dialog.ui.spinBoxBitLength.setValue(1337)
-        self.dialog.ui.spinBoxBitLength.editingFinished.emit()
-        self.assertEqual(self.dialog.current_modulator.samples_per_bit, 1337)
+        self.dialog.ui.spinBoxSamplesPerSymbol.setValue(1337)
+        self.dialog.ui.spinBoxSamplesPerSymbol.editingFinished.emit()
+        self.assertEqual(self.dialog.current_modulator.samples_per_symbol, 1337)
 
         self.dialog.ui.spinBoxSampleRate.setValue(5e6)
         self.dialog.ui.spinBoxSampleRate.editingFinished.emit()
@@ -64,32 +70,37 @@ class TestModulatorGUI(unittest.TestCase):
 
     def test_zoom(self):
         self.dialog.ui.gVModulated.zoom(1.1)
-        self.assertEqual(int(self.dialog.ui.gVModulated.view_rect().width()),
-                         int(self.dialog.ui.gVCarrier.view_rect().width()))
+        self.assertIn(int(self.dialog.ui.gVModulated.view_rect().width()),
+                         [int(self.dialog.ui.gVCarrier.view_rect().width())-1,
+                          int(self.dialog.ui.gVCarrier.view_rect().width()),
+                          int(self.dialog.ui.gVCarrier.view_rect().width()+1)])
 
-        self.assertEqual(int(self.dialog.ui.gVModulated.view_rect().width()),
-                         int(self.dialog.ui.gVData.view_rect().width()))
+        self.assertIn(int(self.dialog.ui.gVModulated.view_rect().width()),
+                         [int(self.dialog.ui.gVData.view_rect().width())-1,
+                          int(self.dialog.ui.gVData.view_rect().width()),
+                          int(self.dialog.ui.gVData.view_rect().width()+1)])
 
         self.dialog.ui.gVModulated.zoom(1.01)
 
-        self.assertEqual(int(self.dialog.ui.gVModulated.view_rect().width()),
-                         int(self.dialog.ui.gVCarrier.view_rect().width()))
+        self.assertIn(int(self.dialog.ui.gVModulated.view_rect().width()),
+                         [int(self.dialog.ui.gVCarrier.view_rect().width())-1,
+                          int(self.dialog.ui.gVCarrier.view_rect().width()),
+                          int(self.dialog.ui.gVCarrier.view_rect().width()+1)])
 
-        self.assertEqual(int(self.dialog.ui.gVModulated.view_rect().width()),
-                         int(self.dialog.ui.gVData.view_rect().width()))
+        self.assertIn(int(self.dialog.ui.gVModulated.view_rect().width()),
+                         [int(self.dialog.ui.gVData.view_rect().width())-1,
+                          int(self.dialog.ui.gVData.view_rect().width()),
+                          int(self.dialog.ui.gVData.view_rect().width()+1)])
 
     def test_edit_modulation(self):
         self.dialog.ui.comboBoxModulationType.setCurrentText("Amplitude Shift Keying (ASK)")
-        self.assertEqual(self.dialog.ui.lParameterfor0.text(), "Amplitude for 0:")
-        self.assertEqual(self.dialog.ui.lParameterfor1.text(), "Amplitude for 1:")
+        self.assertEqual(self.dialog.ui.labelParameters.text(), "Amplitudes in %:")
 
         self.dialog.ui.comboBoxModulationType.setCurrentText("Frequency Shift Keying (FSK)")
-        self.assertEqual(self.dialog.ui.lParameterfor0.text(), "Frequency for 0:")
-        self.assertEqual(self.dialog.ui.lParameterfor1.text(), "Frequency for 1:")
+        self.assertEqual(self.dialog.ui.labelParameters.text(), "Frequencies in Hz:")
 
         self.dialog.ui.comboBoxModulationType.setCurrentText("Gaussian Frequency Shift Keying (GFSK)")
-        self.assertEqual(self.dialog.ui.lParameterfor0.text(), "Frequency for 0:")
-        self.assertEqual(self.dialog.ui.lParameterfor1.text(), "Frequency for 1:")
+        self.assertEqual(self.dialog.ui.labelParameters.text(), "Frequencies in Hz:")
         self.dialog.ui.spinBoxGaussBT.setValue(0.5)
         self.dialog.ui.spinBoxGaussBT.editingFinished.emit()
         self.assertEqual(self.dialog.current_modulator.gauss_bt, 0.5)
@@ -98,30 +109,29 @@ class TestModulatorGUI(unittest.TestCase):
         self.assertEqual(self.dialog.current_modulator.gauss_filter_width, 5)
 
         self.dialog.ui.comboBoxModulationType.setCurrentText("Phase Shift Keying (PSK)")
-        self.assertEqual(self.dialog.ui.lParameterfor0.text(), "Phase (degree) for 0:")
-        self.assertEqual(self.dialog.ui.lParameterfor1.text(), "Phase (degree) for 1:")
+        self.assertEqual(self.dialog.ui.labelParameters.text(), "Phases in degree:")
 
         self.dialog.ui.comboBoxModulationType.setCurrentText("Amplitude Shift Keying (ASK)")
-        self.assertEqual(self.dialog.ui.lParameterfor0.text(), "Amplitude for 0:")
-        self.assertEqual(self.dialog.ui.lParameterfor1.text(), "Amplitude for 1:")
+        self.assertEqual(self.dialog.ui.labelParameters.text(), "Amplitudes in %:")
 
-        self.assertEqual(int(self.dialog.ui.lSamplesInViewModulated.text()), int(self.dialog.ui.gVModulated.view_rect().width()))
+        self.assertEqual(int(self.dialog.ui.lSamplesInViewModulated.text()),
+                         int(self.dialog.ui.gVModulated.view_rect().width()))
 
     def test_signal_view(self):
-        #self.dialog.show()   # if on KDE
+        self.add_signal_to_form("esaver.complex16s")
+        signal = self.form.signal_tab_controller.signal_frames[0].signal
+
         tree_view = self.dialog.ui.treeViewSignals
         tree_model = tree_view.model()
         item = tree_model.rootItem.children[0].children[0]
         index = tree_model.createIndex(0, 0, item)
         rect = tree_view.visualRect(index)
         QTest.mousePress(tree_view.viewport(), Qt.LeftButton, pos=rect.center())
-        tree_view.selectAll()
-        self.assertEqual(tree_view.selectedIndexes()[0], index)
-        mime_data = tree_model.mimeData(tree_view.selectedIndexes())
-        drag_drop = QDropEvent(rect.center(), Qt.CopyAction|Qt.MoveAction, mime_data, Qt.LeftButton, Qt.NoModifier)
+        mime_data = tree_model.mimeData([index])
+        drag_drop = QDropEvent(rect.center(), Qt.CopyAction | Qt.MoveAction, mime_data, Qt.LeftButton, Qt.NoModifier)
         drag_drop.acceptProposedAction()
         self.dialog.ui.gVOriginalSignal.dropEvent(drag_drop)
-        self.assertEqual(self.dialog.ui.gVOriginalSignal.sceneRect().width(), self.signal.num_samples)
+        self.assertEqual(self.dialog.ui.gVOriginalSignal.sceneRect().width(), signal.num_samples)
 
         self.dialog.ui.cbShowDataBitsOnly.click()
         self.dialog.ui.chkBoxLockSIV.click()

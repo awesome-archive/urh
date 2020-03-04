@@ -1,37 +1,24 @@
-import unittest
-
 import math
 
 from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication
 
-import tests.utils_testing
-from urh import constants
-from urh.controller.MainController import MainController
+from tests.QtTestCase import QtTestCase
 from urh.plugins.MessageBreak.MessageBreakPlugin import MessageBreakPlugin
 from urh.plugins.NetworkSDRInterface.NetworkSDRInterfacePlugin import NetworkSDRInterfacePlugin
 from urh.plugins.ZeroHide.ZeroHidePlugin import ZeroHidePlugin
-
-from tests.utils_testing import get_path_for_data_file
+from urh.ui.views.ZoomableGraphicView import ZoomableGraphicView
 from urh.util.Formatter import Formatter
 
-app = tests.utils_testing.app
 
-
-class TestPlugins(unittest.TestCase):
+class TestPlugins(QtTestCase):
     def setUp(self):
-        self.old_sym_len = constants.SETTINGS.value('rel_symbol_length', type=int)
-        constants.SETTINGS.setValue('rel_symbol_length', 0) # Disable Symbols for this Test
-
-        self.form = MainController()
-        self.form.add_signalfile(get_path_for_data_file("esaver.complex"))
+        super().setUp()
+        self.add_signal_to_form("esaver.complex16s")
         self.sframe = self.form.signal_tab_controller.signal_frames[0]
         self.cframe = self.form.compare_frame_controller
-        self.gframe = self.form.generator_tab_controller
         self.form.ui.tabWidget.setCurrentIndex(1)
         self.assertEqual(self.cframe.protocol_model.row_count, 3)
-
-    def tearDown(self):
-        constants.SETTINGS.setValue('rel_symbol_length', self.old_sym_len) # Restore Symbol Length
 
     def test_message_break_plugin(self):
         bp = MessageBreakPlugin()
@@ -45,32 +32,33 @@ class TestPlugins(unittest.TestCase):
         self.assertEqual(self.cframe.protocol_model.row_count, 3)
 
     def test_zero_hide_plugin_gui(self):
-        self.assertEqual(len(self.cframe.proto_analyzer.decoded_proto_bits_str[0]), 377)
+        self.assertEqual(len(self.cframe.proto_analyzer.decoded_proto_bits_str[0]), 331)
         zh = ZeroHidePlugin()
-        zh.following_zeros = 188
+        zh.following_zeros = 158
         action = zh.get_action(self.cframe.ui.tblViewProtocol, self.cframe.protocol_undo_stack, (),
                                self.cframe.proto_analyzer, 0)
         action.trigger()
-        self.assertEqual(len(self.cframe.proto_analyzer.decoded_proto_bits_str[0]), 377 - 188)
+
+        self.assertEqual(len(self.cframe.proto_analyzer.decoded_proto_bits_str[0]), 331 - 158)
 
         self.cframe.protocol_undo_stack.undo()
-        self.assertEqual(len(self.cframe.proto_analyzer.decoded_proto_bits_str[0]), 377)
+        self.assertEqual(len(self.cframe.proto_analyzer.decoded_proto_bits_str[0]), 331)
 
     def test_zero_hide_plugin_function(self):
         zh = ZeroHidePlugin()
         zh.following_zeros = 3
-        self.form.add_signalfile(get_path_for_data_file("ask.complex"))
+        self.add_signal_to_form("ask.complex")
         self.form.ui.tabWidget.setCurrentIndex(1)
-        test_bits = "10110010010110110110110110110110110001000000"
+        test_bits = "1011001001011011011011011011011011001000000"
         self.assertEqual(self.cframe.proto_analyzer.decoded_proto_bits_str[3], test_bits)
 
         action = zh.get_action(self.cframe.ui.tblViewProtocol, self.cframe.protocol_undo_stack, (),
                                self.cframe.proto_analyzer, 0)
         action.trigger()
-        self.assertEqual(self.cframe.proto_analyzer.decoded_proto_bits_str[3], "10110010010110110110110110110110111")
+        self.assertEqual(self.cframe.proto_analyzer.decoded_proto_bits_str[3], "1011001001011011011011011011011011001")
 
     def test_sdr_interface_plugin(self):
-        si = NetworkSDRInterfacePlugin()
+        si = NetworkSDRInterfacePlugin(resume_on_full_receive_buffer=True)
         test_bits = [
             "10101011111",
             "1010100011000111110001011001010101010101",
@@ -96,51 +84,66 @@ class TestPlugins(unittest.TestCase):
 
     def test_insert_sine_plugin(self):
         insert_sine_plugin = self.sframe.ui.gvSignal.insert_sine_plugin
-        insert_sine_plugin.create_dialog_connects()
+        num_samples = 10000
+        dialog = insert_sine_plugin.get_insert_sine_dialog(original_data=self.sframe.signal.iq_array.data,
+                                                           position=2000,
+                                                           sample_rate=self.sframe.signal.sample_rate,
+                                                           num_samples=num_samples)
 
-        while not insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.isEnabled():
-            app.processEvents()
+        graphics_view = dialog.graphicsViewSineWave  # type: ZoomableGraphicView
+
+        while not dialog.doubleSpinBoxAmplitude.isEnabled():
+            QApplication.instance().processEvents()
             QTest.qWait(10)
 
-        insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.setValue(0.1)
-        insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.editingFinished.emit()
+        self.assertEqual(int(graphics_view.sceneRect().width()), self.sframe.signal.num_samples + num_samples)
+        self.assertEqual(insert_sine_plugin.insert_indicator.rect().width(), num_samples)
+        self.assertEqual(insert_sine_plugin.insert_indicator.rect().x(), 2000)
+
+        dialog.doubleSpinBoxAmplitude.setValue(0.1)
+        dialog.doubleSpinBoxAmplitude.editingFinished.emit()
         self.assertEqual(insert_sine_plugin.amplitude, 0.1)
 
-        while not insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.isEnabled():
-            app.processEvents()
+        while not dialog.doubleSpinBoxAmplitude.isEnabled():
+            self.app.processEvents()
             QTest.qWait(10)
 
-        insert_sine_plugin.dialog_ui.doubleSpinBoxFrequency.setValue(1e6)
-        insert_sine_plugin.dialog_ui.doubleSpinBoxFrequency.editingFinished.emit()
+        dialog.doubleSpinBoxFrequency.setValue(1e6)
+        dialog.doubleSpinBoxFrequency.editingFinished.emit()
         self.assertEqual(insert_sine_plugin.frequency, 1e6)
 
-        while not insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.isEnabled():
-            app.processEvents()
+        while not dialog.doubleSpinBoxAmplitude.isEnabled():
+            self.app.processEvents()
             QTest.qWait(10)
 
-        insert_sine_plugin.dialog_ui.doubleSpinBoxPhase.setValue(100)
-        insert_sine_plugin.dialog_ui.doubleSpinBoxPhase.editingFinished.emit()
+        dialog.doubleSpinBoxPhase.setValue(100)
+        dialog.doubleSpinBoxPhase.editingFinished.emit()
         self.assertEqual(insert_sine_plugin.phase, 100)
 
-        while not insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.isEnabled():
-            app.processEvents()
+        while not dialog.doubleSpinBoxAmplitude.isEnabled():
+            self.app.processEvents()
             QTest.qWait(10)
 
-        insert_sine_plugin.dialog_ui.doubleSpinBoxSampleRate.setValue(2e6)
-        insert_sine_plugin.dialog_ui.doubleSpinBoxSampleRate.editingFinished.emit()
+        dialog.doubleSpinBoxSampleRate.setValue(2e6)
+        dialog.doubleSpinBoxSampleRate.editingFinished.emit()
         self.assertEqual(insert_sine_plugin.sample_rate, 2e6)
 
-        while not insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.isEnabled():
-            app.processEvents()
+        while not dialog.doubleSpinBoxAmplitude.isEnabled():
+            self.app.processEvents()
             QTest.qWait(10)
 
-        insert_sine_plugin.dialog_ui.doubleSpinBoxNSamples.setValue(0.5e6)
-        insert_sine_plugin.dialog_ui.doubleSpinBoxNSamples.editingFinished.emit()
+        dialog.doubleSpinBoxNSamples.setValue(0.5e6)
+        dialog.doubleSpinBoxNSamples.editingFinished.emit()
         self.assertEqual(insert_sine_plugin.num_samples, 0.5e6)
 
-        while not insert_sine_plugin.dialog_ui.doubleSpinBoxAmplitude.isEnabled():
-            app.processEvents()
+        while not dialog.doubleSpinBoxAmplitude.isEnabled():
+            self.app.processEvents()
             QTest.qWait(10)
 
         sep = Formatter.local_decimal_seperator()
-        self.assertEqual(insert_sine_plugin.dialog_ui.lineEditTime.text(), "250" + sep + "000m")
+        self.assertEqual(dialog.lineEditTime.text(), "250" + sep + "000m")
+
+        #  Close the dialog via finished
+        dialog.finished.emit(0)
+        QApplication.instance().processEvents()
+        QTest.qWait(self.CLOSE_TIMEOUT)

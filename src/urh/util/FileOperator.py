@@ -2,14 +2,14 @@ import os
 import shutil
 import tarfile
 import tempfile
-import wave
 import zipfile
 
 import numpy as np
 from PyQt5.QtCore import QDir
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
-from urh.util.Errors import Errors
+from urh.models.FileIconProvider import FileIconProvider
+from urh.signalprocessing.IQArray import IQArray
 
 VIEW_TYPES = ["Bits", "Hex", "ASCII"]
 
@@ -19,61 +19,123 @@ archives = {}
 
 RECENT_PATH = QDir.homePath()
 
-def uncompress_archives(filenames, temp_dir):
+EXT = {np.int8: ".complex16s", np.uint8: ".complex16u", np.int16: ".complex32s", np.uint16: ".complex32u",
+       np.float32: ".complex", np.complex64: ".complex"}
+FILTER = {np.int8: "Complex16 signed (*.complex16s *.cs8)", np.uint8: "Complex16 unsigned (*.complex16u *.cu8)",
+          np.uint16: "Complex32 unsigned (*.complex32u *.cu16)", np.int16: "Complex32 signed (*.complex32s *.cs16)",
+          np.float32: "Complex (*.complex)", np.complex64: "Complex (*.complex)"}
+
+
+def get_open_dialog(directory_mode=False, parent=None, name_filter="full") -> QFileDialog:
+    fip = FileIconProvider()
+    dialog = QFileDialog(parent=parent, directory=RECENT_PATH)
+    dialog.setIconProvider(fip)
+
+    if directory_mode:
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setWindowTitle("Open Folder")
+    else:
+        dialog.setFileMode(QFileDialog.ExistingFiles)
+        dialog.setWindowTitle("Open Files")
+        if name_filter == "full":
+            name_filter = "All Files (*);;" \
+                          "Complex (*.complex);;" \
+                          "Complex16 unsigned (*.complex16u *.cu8);;" \
+                          "Complex16 signed (*.complex16s *.cs8);;" \
+                          "Complex32 unsigned (*.complex32u *.cu16);;" \
+                          "Complex32 signed (*.complex32s *.cs16);;" \
+                          "WAV (*.wav);;" \
+                          "Protocols (*.proto.xml *.proto);;" \
+                          "Binary Protocols (*.bin);;" \
+                          "Fuzzing Profiles (*.fuzz.xml *.fuzz);;" \
+                          "Simulator (*.sim.xml *.sim)" \
+                          "Plain Bits (*.txt);;" \
+                          "Tar Archives (*.tar *.tar.gz *.tar.bz2);;" \
+                          "Zip Archives (*.zip)"
+        elif name_filter == "proto":
+            name_filter = "Protocols (*.proto.xml *.proto);; Binary Protocols (*.bin)"
+        elif name_filter == "fuzz":
+            name_filter = "Fuzzprofiles (*.fuzz.xml *.fuzz)"
+        elif name_filter == "simulator":
+            name_filter = "Simulator (*.sim.xml *.sim)"
+
+        dialog.setNameFilter(name_filter)
+
+    dialog.setOptions(QFileDialog.DontResolveSymlinks)
+    dialog.setViewMode(QFileDialog.Detail)
+
+    return dialog
+
+
+def uncompress_archives(file_names, temp_dir):
     """
-    Extrahiert jedes Archiv aus der Liste von Dateinamen,
-    normale Dateien bleiben unverändert.
-    Fügt außerdem alle Dateien zu den Recent Files hinzu
-    :type filenames: list of str
+    Extract each archive from the list of filenames.
+    Normal files stay untouched.
+    Add all files to the Recent Files.
+    :type file_names: list of str
     :type temp_dir: str
     :rtype: list of str
     """
-    fileNames = []
-    for filename in filenames:
+    result = []
+    for filename in file_names:
         if filename.endswith(".tar") or filename.endswith(".tar.gz") or filename.endswith(".tar.bz2"):
             obj = tarfile.open(filename, "r")
-            extracted_filenames = []
+            extracted_file_names = []
             for j, member in enumerate(obj.getmembers()):
                 obj.extract(member, temp_dir)
                 extracted_filename = os.path.join(temp_dir, obj.getnames()[j])
-                extracted_filenames.append(extracted_filename)
+                extracted_file_names.append(extracted_filename)
                 archives[extracted_filename] = filename
-            fileNames.extend(extracted_filenames[:])
+            result.extend(extracted_file_names[:])
         elif filename.endswith(".zip"):
             obj = zipfile.ZipFile(filename)
-            extracted_filenames = []
+            extracted_file_names = []
             for j, info in enumerate(obj.infolist()):
                 obj.extract(info, path=temp_dir)
                 extracted_filename = os.path.join(temp_dir, obj.namelist()[j])
-                extracted_filenames.append(extracted_filename)
+                extracted_file_names.append(extracted_filename)
                 archives[extracted_filename] = filename
-            fileNames.extend(extracted_filenames[:])
+            result.extend(extracted_file_names[:])
         else:
-            fileNames.append(filename)
+            result.append(filename)
 
-    return fileNames
+    return result
 
 
-def get_save_file_name(initial_name: str, wav_only=False, parent=None, caption="Save signal"):
+def get_save_file_name(initial_name: str, wav_only=False, caption="Save signal", selected_name_filter=None):
     global RECENT_PATH
     if caption == "Save signal":
-        filter = "Complex files (*.complex);;Complex16 files (2 unsigned int8) (*.complex16u);;Complex16 files (2 signed int8) (*.complex16s);;Compressed complex files (*.coco);;wav files (*.wav);;all files (*)"
+        name_filter = "Complex (*.complex);;" \
+                      "Complex16 unsigned (*.complex16u *.cu8);;" \
+                      "Complex16 signed (*.complex16s *.cs8);;" \
+                      "Complex32 unsigned (*.complex32u *.cu16);;" \
+                      "Complex32 signed (*.complex32s *.cs16);;" \
+                      "Complex compressed (*.coco);;" \
+                      "WAV (*.wav);;" \
+                      "All Files (*)"
         if wav_only:
-            filter = "wav files (*.wav);;all files (*)"
+            name_filter = "WAV (*.wav);;All Files (*)"
     elif caption == "Save fuzz profile":
-        filter = "Fuzzfiles (*.fuzz);;All files (*)"
+        name_filter = "Fuzzing Profile (*.fuzz.xml *.fuzz);;All Files (*)"
+    elif caption == "Save encoding":
+        name_filter = ""
+    elif caption == "Save simulator profile":
+        name_filter = "Simulator (*.sim.xml *.sim);;All Files (*)"
+    elif caption == "Export spectrogram":
+        name_filter = "Frequency Time (*.ft);;Frequency Time Amplitude (*.fta)"
     else:
-        filter = "Protocols (*.proto);;All files (*)"
+        name_filter = "Protocols (*.proto.xml *.proto);;Binary Protocol (*.bin);;All Files (*)"
 
     filename = None
-    dialog = QFileDialog()
+    dialog = QFileDialog(directory=RECENT_PATH, caption=caption, filter=name_filter)
     dialog.setFileMode(QFileDialog.AnyFile)
-    dialog.setNameFilter(filter)
     dialog.setViewMode(QFileDialog.Detail)
-    dialog.setDirectory(RECENT_PATH)
     dialog.setLabelText(QFileDialog.Accept, "Save")
-    dialog.setWindowTitle(caption)
     dialog.setAcceptMode(QFileDialog.AcceptSave)
+
+    if selected_name_filter is not None:
+        dialog.selectNameFilter(selected_name_filter)
+
     dialog.selectFile(initial_name)
 
     if dialog.exec():
@@ -85,12 +147,27 @@ def get_save_file_name(initial_name: str, wav_only=False, parent=None, caption="
     return filename
 
 
-def save_data_dialog(signalname: str, data, wav_only=False, parent=None) -> str:
-    filename = get_save_file_name(signalname, wav_only, parent)
+def save_data_dialog(signal_name: str, data, sample_rate=1e6, wav_only=False, parent=None) -> str:
+    if wav_only:
+        if not signal_name.endswith(".wav"):
+            signal_name += ".wav"
+        name_filter = "WAV (*.wav)"
+    else:
+        if not any(signal_name.endswith(e) for e in FILTER.values()):
+            try:
+                dtype = next(d for d in EXT.keys() if d == data.dtype)
+                signal_name += EXT[dtype]
+                name_filter = FILTER[dtype]
+            except StopIteration:
+                name_filter = None
+        else:
+            name_filter = None
+
+    filename = get_save_file_name(signal_name, wav_only, selected_name_filter=name_filter)
 
     if filename:
         try:
-            save_data(data, filename)
+            save_data(data, filename, sample_rate=sample_rate)
         except Exception as e:
             QMessageBox.critical(parent, "Error saving signal", e.args[0])
             filename = None
@@ -99,25 +176,17 @@ def save_data_dialog(signalname: str, data, wav_only=False, parent=None) -> str:
 
     return filename
 
-def save_data(data, filename: str):
+
+def save_data(data, filename: str, sample_rate=1e6, num_channels=2):
+    if not isinstance(data, IQArray):
+        data = IQArray(data)
+
     if filename.endswith(".wav"):
-        f = wave.open(filename, "w")
-        f.setnchannels(1)
-        f.setsampwidth(1)
-        f.setframerate(1000000)
-        f.writeframes(data)
-        f.my_close()
+        data.export_to_wav(filename, num_channels, sample_rate)
     elif filename.endswith(".coco"):
-        with tarfile.open(filename, 'w:bz2') as tarwrite:
-            tmp_name = os.path.join(QDir.tempPath(), "tmpfile")
-            data.tofile(tmp_name)
-            tarwrite.add(tmp_name)
-        os.remove(tmp_name)
+        data.save_compressed(filename)
     else:
-        try:
-            data.tofile(filename)
-        except Exception as e:
-            Errors.write_error(e)
+        data.tofile(filename)
 
     if filename in archives.keys():
         archive = archives[filename]
@@ -128,46 +197,37 @@ def save_data(data, filename: str):
 
 
 def save_signal(signal):
-    filename = signal.filename
-    if filename.endswith(".wav"):
-        data = signal.wave_data
-    elif filename.endswith(".complex16u"):
-        data = ((128 * signal.data.view(np.float32)) + 128).astype(np.uint8)
-    elif filename.endswith(".complex16s"):
-        data = (128 * signal.data.view(np.float32)).astype(np.int8)
-    else:
-        data = signal.data
+    save_data(signal.iq_array.data, signal.filename, signal.sample_rate)
 
-    save_data(data, filename)
 
-def rewrite_zip(zipfname):
+def rewrite_zip(zip_name):
     tempdir = tempfile.mkdtemp()
     try:
-        tempname = os.path.join(tempdir, 'new.zip')
-        files_in_archive = [f for f in archives.keys() if archives[f] == zipfname]
-        with zipfile.ZipFile(tempname, 'w') as zipwrite:
+        temp_name = os.path.join(tempdir, 'new.zip')
+        files_in_archive = [f for f in archives.keys() if archives[f] == zip_name]
+        with zipfile.ZipFile(temp_name, 'w') as zip_write:
             for filename in files_in_archive:
-                zipwrite.write(filename)
-        shutil.move(tempname, zipfname)
+                zip_write.write(filename)
+        shutil.move(temp_name, zip_name)
     finally:
         shutil.rmtree(tempdir)
 
 
-def rewrite_tar(tarname: str):
+def rewrite_tar(tar_name: str):
     tempdir = tempfile.mkdtemp()
     compression = ""
-    if tarname.endswith("gz"):
+    if tar_name.endswith("gz"):
         compression = "gz"
-    elif tarname.endswith("bz2"):
+    elif tar_name.endswith("bz2"):
         compression = "bz2"
     try:
         ext = "" if len(compression) == 0 else "." + compression
-        tempname = os.path.join(tempdir, 'new.tar' + ext)
-        files_in_archive = [f for f in archives.keys() if archives[f] == tarname]
-        with tarfile.open(tempname, 'w:' + compression) as tarwrite:
+        temp_name = os.path.join(tempdir, 'new.tar' + ext)
+        files_in_archive = [f for f in archives.keys() if archives[f] == tar_name]
+        with tarfile.open(temp_name, 'w:' + compression) as tar_write:
             for file in files_in_archive:
-                tarwrite.add(file)
-        shutil.move(tempname, tarname)
+                tar_write.add(file)
+        shutil.move(temp_name, tar_name)
     finally:
         shutil.rmtree(tempdir)
 

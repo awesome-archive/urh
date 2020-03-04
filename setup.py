@@ -1,5 +1,13 @@
 import os
+import shutil
 import sys
+import tempfile
+
+if sys.version_info < (3, 4):
+    print("You need at least Python 3.4 for this application!")
+    if sys.version_info[0] < 3:
+        print("try running with python3 {}".format(" ".join(sys.argv)))
+    sys.exit(1)
 
 try:
     from setuptools import setup, Extension
@@ -9,35 +17,34 @@ except ImportError:
     print("Try installing them with pip install setuptools")
     sys.exit(1)
 
-from distutils import ccompiler
+from src.urh.dev.native import ExtensionHelper
+from src.urh.dev.native.ExtensionHelper import COMPILER_DIRECTIVES
 import src.urh.version as version
 
 if sys.platform == "win32":
-    OPEN_MP_FLAG = "-openmp"
+    OPEN_MP_FLAG = "/openmp"
+    NO_NUMPY_WARNINGS_FLAG = ""
 elif sys.platform == "darwin":
     OPEN_MP_FLAG = ""  # no OpenMP support in default Mac OSX compiler
+    NO_NUMPY_WARNINGS_FLAG = "-Wno-#warnings"
 else:
     OPEN_MP_FLAG = "-fopenmp"
+    NO_NUMPY_WARNINGS_FLAG = "-Wno-cpp"
 
-
-COMPILER_DIRECTIVES = {'language_level': 3,
-                       'cdivision': True,
-                       'wraparound': False,
-                       'boundscheck': False,
-                       'initializedcheck': False,
-                       }
 
 UI_SUBDIRS = ("actions", "delegates", "views")
 PLUGINS = [path for path in os.listdir("src/urh/plugins") if os.path.isdir(os.path.join("src/urh/plugins", path))]
 URH_DIR = "urh"
 
+IS_RELEASE = os.path.isfile(os.path.join(tempfile.gettempdir(), "urh_releasing"))
+
 try:
-    import Cython.Build
+    from Cython.Build import cythonize
 except ImportError:
-    USE_CYTHON = False
-else:
-    USE_CYTHON = True
-EXT = '.pyx' if USE_CYTHON else '.cpp'
+    print("You need Cython to build URH's extensions!\n"
+          "You can get it e.g. with python3 -m pip install cython.",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 class build_ext(_build_ext):
@@ -62,109 +69,80 @@ def get_packages():
 
 
 def get_package_data():
-    package_data = {"urh.cythonext": ["*.cpp"]}
+    package_data = {"urh.cythonext": ["*.pyx", "*.pxd"]}
     for plugin in PLUGINS:
         package_data["urh.plugins." + plugin] = ['*.ui', "*.txt"]
 
-    is_release = os.path.isfile("/tmp/urh_releasing")  # make sure precompiled binding are uploaded to PyPi
+    package_data["urh.dev.native.lib"] = ["*.pyx", "*.pxd"]
 
-    if sys.platform == "win32" or is_release:
-        # we use precompiled device backends on windows
-        package_data["urh.dev.native.lib"] = ["hackrf.cp35-win_amd64.pyd"]
+    if IS_RELEASE and sys.platform == "win32":
+        package_data["urh.dev.native.lib.shared"] = ["*.dll", "*.txt"]
 
     return package_data
 
 
-def get_ext_modules():
-    filenames = [os.path.splitext(f)[0] for f in os.listdir("src/urh/cythonext") if f.endswith(EXT)]
-
-    extensions = [Extension("urh.cythonext." + f, ["src/urh/cythonext/" + f + EXT],
+def get_extensions():
+    filenames = [os.path.splitext(f)[0] for f in os.listdir("src/urh/cythonext") if f.endswith(".pyx")]
+    extensions = [Extension("urh.cythonext." + f, ["src/urh/cythonext/" + f + ".pyx"],
                             extra_compile_args=[OPEN_MP_FLAG],
                             extra_link_args=[OPEN_MP_FLAG],
                             language="c++") for f in filenames]
 
-    return extensions
+    ExtensionHelper.USE_RELATIVE_PATHS = True
+    device_extensions, device_extras = ExtensionHelper.get_device_extensions_and_extras()
+    extensions += device_extensions
 
+    if NO_NUMPY_WARNINGS_FLAG:
+        for extension in extensions:
+            extension.extra_compile_args.append(NO_NUMPY_WARNINGS_FLAG)
 
-def get_device_modules():
-    if sys.platform == "win32":
-        # we use precompiled device backends on windows
-        return []
-
-    compiler = ccompiler.new_compiler()
-
-    extensions = []
-    devices = {
-        "hackrf": {"lib": "hackrf", "test_function": "hackrf_init"}
-    }
-
-    scriptdir = os.path.realpath(os.path.dirname(__file__))
-    sys.path.append(os.path.realpath(os.path.join(scriptdir, "src", "urh", "dev", "native", "lib")))
-    for dev_name, params in devices.items():
-        if compiler.has_function(params["test_function"], libraries=(params["lib"],)):
-            print("\n\n\nFound {0}.h - will compile with native {1} support\n\n\n".format(params["lib"], dev_name))
-            e = Extension("urh.dev.native.lib." + dev_name, ["src/urh/dev/native/lib/{0}{1}".format(dev_name, EXT)],
-                          extra_compile_args=[OPEN_MP_FLAG],
-                          extra_link_args=[OPEN_MP_FLAG], language="c++",
-                          libraries=[params["lib"]])
-            extensions.append(e)
-        else:
-            print("\n\n\nCould not find {0}.h - skipping native support for {1}\n\n\n".format(params["lib"], dev_name))
-        try:
-            os.remove("a.out")  # Temp file for checking
-        except OSError:
-            pass
+    extensions = cythonize(extensions, compiler_directives=COMPILER_DIRECTIVES, quiet=True, compile_time_env=device_extras)
     return extensions
 
 
 def read_long_description():
     try:
-        import pypandoc
-        return pypandoc.convert('README.md', 'rst')
-    except(IOError, ImportError):
+        with open("README.md") as f:
+            text = f.read()
+        return text
+    except:
         return ""
 
-# import generate_ui
-# generate_ui.gen # pyuic5 is not included in all python3-pyqt5 packages (e.g. ubuntu), therefore do not regenerate UI here
-
-install_requires = ["numpy", "psutil"]
-try:
-    import PyQt5
-except ImportError:
+install_requires = ["numpy", "psutil", "pyzmq", "cython"]
+if IS_RELEASE:
     install_requires.append("pyqt5")
+else:
+    try:
+        import PyQt5
+    except ImportError:
+        install_requires.append("pyqt5")
 
 if sys.version_info < (3, 4):
     install_requires.append('enum34')
 
-extensions = get_ext_modules() + get_device_modules()
-
-if USE_CYTHON:
-    from Cython.Build import cythonize
-    extensions = cythonize(extensions, compiler_directives=COMPILER_DIRECTIVES)
 
 setup(
     name="urh",
     version=version.VERSION,
     description="Universal Radio Hacker: investigate wireless protocols like a boss",
     long_description=read_long_description(),
+    long_description_content_type="text/markdown",
     author="Johannes Pohl",
     author_email="Johannes.Pohl90@gmail.com",
     package_dir={"": "src"},
     package_data=get_package_data(),
     url="https://github.com/jopohl/urh",
-    license="Apache License 2.0",
+    license="GNU General Public License (GPL)",
     download_url="https://github.com/jopohl/urh/tarball/v" + str(version.VERSION),
     install_requires=install_requires,
     setup_requires=['numpy'],
     packages=get_packages(),
-    ext_modules=extensions,
-    cmdclass={'build_ext':build_ext},
+    ext_modules=get_extensions(),
+    cmdclass={'build_ext': build_ext},
     zip_safe=False,
     entry_points={
         'console_scripts': [
             'urh = urh.main:main',
+            'urh_cli = urh.cli.urh_cli:main',
         ]}
 )
-
-# python setup.py sdist --> Source distribution
-# python setup.py bdist --> Vorkompiliertes Package https://docs.python.org/3/distutils/builtdist.html

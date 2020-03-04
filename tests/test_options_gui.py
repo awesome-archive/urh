@@ -1,41 +1,17 @@
-import unittest
-
-from PyQt5.QtCore import QModelIndex
-
-import tests.utils_testing
-from urh.controller.MainController import MainController
-from urh.controller.OptionsController import OptionsController
+from tests.QtTestCase import QtTestCase
+from urh.controller.dialogs.OptionsDialog import OptionsDialog
+from urh.dev.BackendHandler import BackendHandler
 from urh.models.PluginListModel import PluginListModel
 from urh.plugins.PluginManager import PluginManager
 
-app = tests.utils_testing.app
 
-
-class TestOptionsGUI(unittest.TestCase):
+class TestOptionsGUI(QtTestCase):
     def setUp(self):
-        self.form = MainController()
-        self.dialog = OptionsController(self.form.plugin_manager.installed_plugins, parent=self.form)
+        super().setUp()
+        self.dialog = OptionsDialog(self.form.plugin_manager.installed_plugins, parent=self.form)
 
-    def test_interpretation_tab(self):
-        self.dialog.ui.tabWidget.setCurrentIndex(0)
-
-        if self.dialog.ui.chkBoxEnableSymbols.isChecked():
-            self.assertNotEqual(self.dialog.ui.lSymbolLength.text(), "0%")
-        else:
-            self.assertEqual(self.dialog.ui.lSymbolLength.text(), "0%")
-
-        self.dialog.ui.chkBoxEnableSymbols.click()
-
-        if self.dialog.ui.chkBoxEnableSymbols.isChecked():
-            self.assertNotEqual(self.dialog.ui.lSymbolLength.text(), "0%")
-        else:
-            self.assertEqual(self.dialog.ui.lSymbolLength.text(), "0%")
-
-        self.dialog.ui.chkBoxEnableSymbols.click()
-        if self.dialog.ui.chkBoxEnableSymbols.isChecked():
-            self.assertNotEqual(self.dialog.ui.lSymbolLength.text(), "0%")
-        else:
-            self.assertEqual(self.dialog.ui.lSymbolLength.text(), "0%")
+        if self.SHOW:
+            self.dialog.show()
 
     def test_generation_tab(self):
         self.dialog.ui.tabWidget.setCurrentIndex(0)
@@ -51,8 +27,8 @@ class TestOptionsGUI(unittest.TestCase):
                          self.dialog.ui.doubleSpinBoxFuzzingPause.isEnabled())
 
     def test_plugins_tab(self):
-        self.dialog.ui.tabWidget.setCurrentIndex(4)
-        self.assertEqual(self.dialog.ui.tabWidget.tabText(4), "Plugins")
+        self.dialog.ui.tabWidget.setCurrentIndex(3)
+        self.assertEqual(self.dialog.ui.tabWidget.tabText(3), "Plugins")
 
         list_view = self.dialog.plugin_controller.ui.listViewPlugins
         model = list_view.model()
@@ -64,5 +40,31 @@ class TestOptionsGUI(unittest.TestCase):
             list_view.setCurrentIndex(model.index(i, 0))
             self.assertNotEqual(descr, self.dialog.plugin_controller.ui.txtEditPluginDescription.toPlainText())
 
+    def test_device_tab(self):
+        self.dialog.ui.tabWidget.setCurrentIndex(4)
+        self.assertEqual(self.dialog.ui.tabWidget.tabText(4), "Device")
 
+        self.assertEqual(self.dialog.ui.tblDevices.model().rowCount(), len(BackendHandler.DEVICE_NAMES))
+        self.dialog.ui.radioButtonPython2Interpreter.click()
 
+        self.assertTrue(self.dialog.ui.lineEditPython2Interpreter.isEnabled())
+        self.assertFalse(self.dialog.ui.lineEditGnuradioDirectory.isEnabled())
+
+        self.dialog.ui.radioButtonGnuradioDirectory.click()
+        self.assertFalse(self.dialog.ui.lineEditPython2Interpreter.isEnabled())
+        self.assertTrue(self.dialog.ui.lineEditGnuradioDirectory.isEnabled())
+
+        self.dialog.ui.radioButtonPython2Interpreter.click()
+        self.assertFalse(self.dialog.ui.radioButtonGnuradioDirectory.isChecked())
+        self.assertFalse(self.dialog.ui.lineEditGnuradioDirectory.isEnabled())
+        self.assertTrue(self.dialog.ui.lineEditPython2Interpreter.isEnabled())
+
+    def test_field_type_tab(self):
+        self.dialog.ui.tabWidget.setCurrentWidget(self.dialog.ui.tabFieldtypes)
+        n_rows = self.dialog.ui.tblLabeltypes.model().rowCount()
+        self.assertGreater(n_rows, 1)
+        self.dialog.ui.btnAddLabelType.click()
+        self.wait_before_new_file()
+        self.assertEqual(n_rows + 1, self.dialog.ui.tblLabeltypes.model().rowCount())
+        self.dialog.ui.btnRemoveLabeltype.click()
+        self.assertEqual(n_rows, self.dialog.ui.tblLabeltypes.model().rowCount())
